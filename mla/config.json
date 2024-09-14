@@ -18,7 +18,7 @@
     "initializer_range": 0.02,
     "intermediate_size": 12288,
     "kv_lora_rank": 512,
-    "max_position_embeddings": 2048,
+    "max_position_embeddings": 204800,
     "model_type": "deepseek_v2",
     "moe_intermediate_size": 1536,
     "moe_layer_freq": 1,

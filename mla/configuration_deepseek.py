@@ -116,8 +116,11 @@ class DeepseekV2Config(PretrainedConfig):
         num_hidden_layers=30,
         # num_attention_heads=32,
         num_attention_heads=128,  
-        # num_key_value_heads=32,
-        num_key_value_heads=128,
+        # 调整 n_group 的方式是通过设置 num_key_value_heads 来使得查询头被分成多个组
+        # num_key_value_heads = 8, # n_group = 16
+        # num_key_value_heads = 16, # n_group = 8
+        num_key_value_heads=32, # n_group = 4
+        # num_key_value_heads = 128, # n_group = 1
         n_shared_experts = None,
         n_routed_experts = None,
         ep_size = 1,
@@ -128,8 +131,7 @@ class DeepseekV2Config(PretrainedConfig):
         v_head_dim = 128,
         qk_nope_head_dim = 128,
         topk_method = 'gready',
-        # n_group = None,
-        n_group=16,  
+        n_group = None,
         topk_group = None,
         num_experts_per_tok = None,
         moe_layer_freq = 1,
@@ -139,7 +141,7 @@ class DeepseekV2Config(PretrainedConfig):
         aux_loss_alpha = 0.001,
         seq_aux = True,
         hidden_act="silu",
-        max_position_embeddings=2048,
+        max_position_embeddings=204800,
         initializer_range=0.02,
         rms_norm_eps=1e-6,
         use_cache=True,

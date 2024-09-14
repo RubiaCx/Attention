@@ -233,8 +233,8 @@ class MHABencher(BenchmarkFixture):
 
 
 class GQABencher(BenchmarkFixture):
-    def __init__(self, config: DeepseekV2Config, kv_len: int, q_len: int = 1, bsz: int = 1, dev='cuda'):
-        super().__init__(config, kv_len, q_len=q_len, bsz=bsz, dev=dev)
+    def __init__(self, config: DeepseekV2Config, *args, **kwargs):
+        super().__init__(config, *args, **kwargs)
         self.attn = MultiheadGQA(
             embed_dim=config.hidden_size,
             num_query_heads=config.num_attention_heads,
@@ -433,17 +433,14 @@ def profile(mod: str, kv_len: int, bsz: int = 1, config: str = './config.json'):
                 torch.cuda.synchronize()  # 确保所有 GPU 操作都完成
 
 def main(
-    bench: str,
-    input_len: int = 1,
-    output_len: int = 1,
-    bsz: int = 1,
-    config: str = './config.json',
-    csv: bool = False,
-    gpu_id: int = 0
+    gpu_id: int = 0,
+    bench: str = "GQA",
+    input_len: int = 1024,  
+    output_len: int = 1024,  
+    batch_size: int = 32,  
+    config: str = './config.json',  
+    csv: bool = False  #
 ):
-    kv_len = input_len
-    repeat = output_len
-
     available_gpus = torch.cuda.device_count()
     if available_gpus == 0:
         raise RuntimeError("No GPUs are available.")
@@ -451,12 +448,14 @@ def main(
         raise ValueError(f"Invalid GPU device ID {gpu_id}. Available GPU IDs: 0 to {available_gpus - 1}")
     device = torch.device(f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu")
     torch.cuda.set_device(gpu_id)
-
+    
     cfg = DeepseekV2Config.from_json_file(config)
+    kv_len = input_len
+    repeat = output_len
     bencher_class = BENCHERS.get(bench)
     if bencher_class is None:
         raise ValueError(f"Unknown benchmark: {bench}")
-    bencher = bencher_class(cfg, kv_len=kv_len, q_len=1, bsz=bsz, dev=device)
+    bencher = bencher_class(cfg, kv_len=kv_len, q_len=1, bsz=batch_size, dev=device)
 
     start_time = time.time()
     for _ in range(repeat):
@@ -473,7 +472,7 @@ def main(
     memory = bencher.memory_consume()
 
     if csv:
-        print(f'{bencher.name()},{bsz},{kv_len},{device_name},{cache_size},{elapsed_time / repeat},{elapsed_time / repeat},{elapsed_time / repeat},{elapsed_time / repeat}')
+        print(f'{bencher.name()},{batch_size},{kv_len},{device_name},{cache_size},{elapsed_time / repeat},{elapsed_time / repeat},{elapsed_time / repeat},{elapsed_time / repeat}')
     else:
         print(f'Device: {device_name}')
         cache_size_gb = cache_size / (1024 ** 3)  # 转换为 GB
