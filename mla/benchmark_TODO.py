@@ -9,6 +9,13 @@ import torch.nn.functional as F
 from einops import einsum, rearrange
 import time  # 导入时间模块用于测量执行时间
 import math
+import fairscale.nn.model_parallel.initialize as fs_init
+from fairscale.nn.model_parallel.layers import (
+    ColumnParallelLinear,
+    RowParallelLinear,
+    VocabParallelEmbedding,
+)
+
 torch.set_grad_enabled(False)
 
 def scaled_dot_product_gqa(
@@ -152,6 +159,96 @@ class MultiheadGQA(nn.Module):
 
         return out, attn_weights
 
+class MultiheadMeta(nn.Module):
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        dropout: float = 0.0,
+        bias: bool = True,
+        layer_norm: bool = True,
+        layer_norm_eps: float = 1e-5,
+    ):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads  # 每个头的维度
+        
+        model_parallel_size = fs_init.get_model_parallel_world_size()
+        # 确保 embed_dim 可以被 num_heads 整除
+        if embed_dim % num_heads != 0:
+            raise ValueError(f"embed_dim ({embed_dim}) must be divisible by num_heads ({num_heads})")
+
+        # 使用 ColumnParallelLinear 进行并行化线性投影，并确保参数一致性
+        self.q_proj = ColumnParallelLinear(
+            embed_dim,
+            num_heads * self.head_dim,  # output size
+            bias=bias,
+            gather_output=False,  # 保持输出不被收集
+            init_method=lambda x: x  # 自定义初始化方法
+        )
+
+        self.k_proj = ColumnParallelLinear(
+            embed_dim,
+            num_heads * self.head_dim,
+            bias=bias,
+            gather_output=False,
+            init_method=lambda x: x
+        )
+
+        self.v_proj = ColumnParallelLinear(
+            embed_dim,
+            num_heads * self.head_dim,
+            bias=bias,
+            gather_output=False,
+            init_method=lambda x: x
+        )
+
+        # 使用 RowParallelLinear 进行并行化输出投影
+        self.out_proj = RowParallelLinear(
+            num_heads * self.head_dim,
+            embed_dim,
+            bias=bias,
+            input_is_parallel=True,  # 输入已经是并行的
+            init_method=lambda x: x
+        )
+
+        # 层归一化
+        self.norm = nn.LayerNorm(embed_dim, eps=layer_norm_eps) if layer_norm else None
+
+        # 额外的缓存，用于处理并行计算
+        self.cache_k = torch.zeros(
+            (
+                1,  # 你可以根据批次大小调整
+                1,  # 最大序列长度
+                num_heads,
+                self.head_dim
+            )
+        ).cuda()
+
+        self.cache_v = torch.zeros(
+            (
+                1,
+                1,
+                num_heads,
+                self.head_dim
+            )
+        ).cuda()
+
+    def forward(self, query, key, value):
+        q, _ = self.q_proj(query)
+        k, _ = self.k_proj(key)
+        v, _ = self.v_proj(value)
+
+        # 进行注意力计算和输出投影
+        # 这里省略了具体实现，假设注意力计算完成
+        output, _ = self.out_proj(q)  # 使用并行化输出投影
+
+        # 选择性层归一化
+        if self.norm:
+            output = self.norm(output)
+
+        return output
 
 class AttentionMHA(torch.nn.Module):
     def __init__(self, hidden_size, num_heads, dropout=0.1, **kwargs):
@@ -258,6 +355,33 @@ class GQABencher(BenchmarkFixture):
         element_size = self.kv.element_size()
         return cache_elements * element_size
 
+class MetaBencher(BenchmarkFixture):
+    def __init__(self, config: DeepseekV2Config, *args, **kwargs):
+        super().__init__(config, *args, **kwargs)
+        # 初始化使用 MultiheadMeta 注意力机制
+        self.attn = MultiheadMeta(
+            embed_dim=config.hidden_size,
+            num_heads=config.num_attention_heads,
+            dropout=config.attention_dropout
+        ).to(self.device)
+
+        # 将输入张量移动到设备上
+        self.kv = self.kv.to(self.device)
+        self.q = self.q.to(self.device)
+        self.kv_pos = self.kv_pos.to(self.device)
+        self.q_pos = self.q_pos.to(self.device)
+
+    def iter(self):
+        # 执行一次前向传播迭代
+        return self.attn.forward(self.q, self.kv, self.kv, need_weights=False)
+
+    def cache_size(self):
+        # 计算 Key 和 Value 的缓存大小
+        head_dim = self.attn.head_dim
+        num_heads = self.attn.num_heads
+        cache_elements = self.bsz * self.kv_len * num_heads * head_dim * 2  
+        element_size = self.kv.element_size()
+        return cache_elements * element_size
 
 '''
 定义了不同的基准测试类
@@ -376,6 +500,7 @@ class AbsorbedMaterialized_CacheCompressed_MoveElisionBencher(BenchmarkFixture):
 STR_2_MODEL = {
     'MHA': MHABencher,
     'GQA': GQABencher,
+    'Meta': MetaBencher,
     'B'       : BaselineBencher,
     'CC'      : CacheCompressedBencher,
     'CD'      : CacheDecompressedBencher,
@@ -388,6 +513,7 @@ STR_2_MODEL = {
 ALL_BENCHMARKS = [
     MHABencher,
     GQABencher,
+    MetaBencher,
     BaselineBencher,
     CacheCompressedBencher,
     CacheDecompressedBencher,
