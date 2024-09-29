@@ -71,7 +71,7 @@ class CacheDecompressedBencher(BenchmarkFixture):
         self.attn = AttentionCacheDecompressed(**self.cfg_dict).cuda()
         k, v = self.attn.decompress_kv(self.kv, self.kv_pos)
         self.decompressed = k.repeat(self.bsz, 1, 1, 1), v.repeat(self.bsz, 1, 1, 1)
-
+        
     def iter(self):
         k, v = self.decompressed
         return self.attn.forward(self.q, self.q_pos, k, v)
@@ -88,6 +88,7 @@ class CacheCompressedBencher(BenchmarkFixture):
         super().__init__(config, *args, **kwargs)
         self.attn = AttentionCacheCompressed(**self.cfg_dict).cuda()
         self.compressed = self.attn.compress_kv(self.kv, self.kv_pos).repeat(self.bsz, 1, 1)
+
     
     def iter(self):
         return self.attn.forward(self.q, self.q_pos, self.compressed)
@@ -213,16 +214,22 @@ def profile(mod:str ,kv_len: int, bsz: int = 1, config: str = './config.json'):
                 torch.cuda.synchronize()  # 确保所有 GPU 操作都完成
             prof.step()
 
-def main(bench: str,  kv_len: int, bsz: int = 32, config: str = './config.json', repeat: Optional[int] = None, 
+def main(bench: str,  kv_len: int, bsz: int = 32, config: str = '/cpfs01/user/xuhaoran/202409mla/cx-Attention/mla/config.json', repeat: Optional[int] = None, 
          min_run_time: float = 1.0, csv: bool = False):
     cfg = DeepseekV2Config.from_json_file(config)
     bencher: BenchmarkFixture
     bencher = BENCHERS[bench](cfg, kv_len, bsz=bsz)
     if repeat is not None:
-        for _ in range(repeat):
+        for i in range(repeat):
             bencher.iter()
+            cache_size = bencher.cache_size()
+            memory = bencher.memory_consume()
+            
+            print(f'repeat:{i} KV Cache: {cache_size}   memory usage:{memory}')
+            
         torch.cuda.synchronize()
         return
+    
     result = bencher.benchmark(min_run_time=min_run_time)
     cache_size = bencher.cache_size()
     device_name = torch.cuda.get_device_name()
@@ -238,6 +245,8 @@ def main(bench: str,  kv_len: int, bsz: int = 32, config: str = './config.json',
 main.__doc__ = doc
 
 if __name__ == "__main__":
-    import fire
-    fire.Fire(main)
-    profile(mod="B",kv_len=2048,bsz=16)
+    # import fire
+    # fire.Fire(main)
+    main(bench="CD",kv_len=1024, bsz=32, repeat=128)
+    # main(bench="A_CC_ME",kv_len=32000,bsz=256, repeat=1)
+    # profile(mod="B",kv_len=2048,bsz=16)

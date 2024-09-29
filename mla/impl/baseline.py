@@ -135,28 +135,33 @@ class DeepseekAttention(nn.Module):
         - hidden_states_kv: [bsz, kv_len, hidden_size]
         - position_ids: [bsz, q_len]
         '''
-        bsz, q_len, _ = hidden_states_q.size()
+        # 计算q的部分
+        bsz, q_len, _ = hidden_states_q.size() 
         q = self.q_b_proj(self.q_a_layernorm(self.q_a_proj(hidden_states_q)))
         q = q.view(bsz, q_len, self.num_heads, self.q_head_dim).transpose(1, 2)
         q_nope, q_pe = torch.split(
             q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1
         )
-
+        
+        # 计算kv
         kv_seq_len = hidden_states_kv.size(1)
         compressed_kv = self.kv_a_proj_with_mqa(hidden_states_kv)
         compressed_kv, k_pe = torch.split(
             compressed_kv, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1
         )
         k_pe = k_pe.view(bsz, kv_seq_len, 1, self.qk_rope_head_dim).transpose(1, 2)
+        # 将 MLA 展开成标准 MHA 的形式, 算出k和v
         kv = self.kv_b_proj(self.kv_a_layernorm(compressed_kv)) \
             .view(bsz, kv_seq_len, self.num_heads, self.qk_nope_head_dim + self.v_head_dim) \
             .transpose(1, 2)
-        
+        # 分离出k和v
         k_nope, value_states = torch.split(kv, [self.qk_nope_head_dim, self.v_head_dim], dim=-1)
+        # 给需要 rope 的部分加 rope
         cos, sin = self.rotary_emb(value_states)
         q_pe = apply_rotary_pos_emb(q_pe, cos, sin, q_position_ids)
         k_pe = apply_rotary_pos_emb(k_pe, cos, sin, kv_position_ids)
-
+        # 更新和拼接历史 KVCache，可以看到这里存储的是展开后的 MHA KVCache
+        # 其中 q_head_dim 等于 qk_nope_head_dim + qk_rope_head_dim
         query_states = k_pe.new_empty(bsz, self.num_heads, q_len, self.q_head_dim)
         query_states[:, :, :, : self.qk_nope_head_dim] = q_nope
         query_states[:, :, :, self.qk_nope_head_dim :] = q_pe

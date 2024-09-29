@@ -171,7 +171,7 @@ class DeepseekAttention(nn.Module):
                 f"Attention weights should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is"
                 f" {attn_weights.size()}"
             )
-
+        print("kv_seq_len:", kv_seq_len)
         # upcast attention to fp32
         attn_weights = nn.functional.softmax(
             attn_weights, dim=-1, dtype=torch.float32
